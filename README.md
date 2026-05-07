@@ -30,7 +30,9 @@ makes it straightforward to add Google Cloud TTS, Azure, AWS Polly, etc.
    `/storage/emulated/0/koreader/plugins/`. On a desktop development build
    it's wherever `DataStorage:getDataDir()` resolves, usually `~/.config/koreader/`.
 
-2. Copy `configuration.sample.lua` to `configuration.lua` (in the same
+2. Get an ElevenLabs API key: sign up at [try.elevenlabs.io/anatoly314-koreader](https://try.elevenlabs.io/anatoly314-koreader) (affiliate link), then go to Profile → API Keys → Create new key. The free tier gives 10K credits/month — plenty for occasional word lookups.
+
+3. Copy `configuration.sample.lua` to `configuration.lua` (in the same
    `speakword.koplugin/` folder) and edit it:
 
    ```lua
@@ -44,7 +46,7 @@ makes it straightforward to add Google Cloud TTS, Azure, AWS Polly, etc.
 
    `configuration.lua` is gitignored. Don't commit your key.
 
-3. Restart KOReader. You should see "Speakword TTS" under the Tools menu.
+4. Restart KOReader. You should see "Speakword TTS" under the Tools menu.
 
 ## Configuring the voice
 
