@@ -1,0 +1,183 @@
+-- speakword_settings: settings sub-menu builder.
+--
+-- Two settings live here:
+--   * provider selection (only ElevenLabs for now, but the UI is generic)
+--   * voice selection (fetched live from the provider's list_voices)
+--
+-- Selection persists across restarts via KOReader's LuaSettings store.
+-- The voice list is fetched on demand (when the user opens the picker), not
+-- at plugin init, so we never block startup on a network call.
+
+local Menu             = require("ui/widget/menu")
+local InfoMessage      = require("ui/widget/infomessage")
+local NetworkMgr       = require("ui/network/manager")
+local Trapper          = require("ui/trapper")
+local UIManager        = require("ui/uimanager")
+local _                = require("gettext")
+local T                = require("ffi/util").template
+
+local Errors           = require("speakword/speakword_errors")
+local ProviderRegistry = require("speakword/speakword_provider")
+
+local Settings = {}
+
+-- Settings keys. Centralized so the entry-point and the UI agree.
+Settings.KEY = {
+    PROVIDER = "provider",
+    VOICE_ID = "voice_id",
+    VOICE_NAME = "voice_name", -- cached for display only
+}
+
+local function showInfo(text)
+    UIManager:show(InfoMessage:new{ text = text })
+end
+
+local function showError(code, detail)
+    UIManager:show(InfoMessage:new{
+        icon = "notice-warning",
+        text = Errors.message(code, detail),
+    })
+end
+
+--- Show a Menu listing each known provider and let the user pick one.
+local function showProviderPicker(plugin, refresh_parent)
+    local items = {}
+    for key, display in pairs(ProviderRegistry.KNOWN) do
+        table.insert(items, {
+            text = display,
+            callback = function()
+                plugin.settings:saveSetting(Settings.KEY.PROVIDER, key)
+                plugin.updated = true
+                -- Changing provider invalidates the voice — clear it so the
+                -- user is prompted to pick a new one.
+                plugin.settings:delSetting(Settings.KEY.VOICE_ID)
+                plugin.settings:delSetting(Settings.KEY.VOICE_NAME)
+                if refresh_parent then refresh_parent() end
+            end,
+        })
+    end
+    table.sort(items, function(a, b) return (a.text or "") < (b.text or "") end)
+
+    UIManager:show(Menu:new{
+        title = _("TTS Provider"),
+        item_table = items,
+        is_popout = false,
+        is_borderless = true,
+    })
+end
+
+--- Build a provider instance with the user's currently selected provider key
+--- and the loaded CONFIGURATION. Returns (provider, nil) or (nil, code).
+local function buildProvider(plugin)
+    if not plugin.CONFIGURATION then
+        return nil, Errors.CODE.NOT_CONFIGURED
+    end
+    local key = plugin.settings:readSetting(Settings.KEY.PROVIDER)
+        or plugin.CONFIGURATION.provider
+    if not key then return nil, Errors.CODE.NOT_CONFIGURED end
+
+    local provider, reason = ProviderRegistry.create(key, plugin.CONFIGURATION)
+    if not provider then
+        return nil, Errors.CODE.NOT_CONFIGURED, reason
+    end
+    return provider
+end
+
+--- Open the voice picker. Fetches the list from the provider on each open
+--- (so a freshly added voice on the ElevenLabs dashboard appears without
+--- restarting KOReader). Network call is wrapped in NetworkMgr + Trapper
+--- so it doesn't freeze the UI on a slow Wi-Fi.
+local function showVoicePicker(plugin, refresh_parent)
+    local provider, code, detail = buildProvider(plugin)
+    if not provider then
+        return showError(code, detail)
+    end
+
+    NetworkMgr:runWhenOnline(function()
+        Trapper:wrap(function()
+            local info = InfoMessage:new{ text = _("Loading voices…") }
+            UIManager:show(info)
+            UIManager:forceRePaint()
+
+            local ok, voices_or_code, detail2 = provider:list_voices()
+
+            UIManager:close(info)
+
+            if not ok then
+                return showError(voices_or_code, detail2)
+            end
+
+            local voices = voices_or_code
+            if #voices == 0 then
+                return showInfo(_("This account has no voices."))
+            end
+
+            local items = {}
+            for _, v in ipairs(voices) do
+                table.insert(items, {
+                    text = v.name,
+                    callback = function()
+                        plugin.settings:saveSetting(Settings.KEY.VOICE_ID, v.id)
+                        plugin.settings:saveSetting(Settings.KEY.VOICE_NAME, v.name)
+                        plugin.updated = true
+                        if refresh_parent then refresh_parent() end
+                    end,
+                })
+            end
+
+            UIManager:show(Menu:new{
+                title = _("Select Voice"),
+                item_table = items,
+                is_popout = false,
+                is_borderless = true,
+            })
+        end)
+    end)
+end
+
+--- Build the list of menu rows that go under "Tools → Speakword".
+--- Returned table is shaped for KOReader's TouchMenu (sub_item_table).
+function Settings.genMenuItems(plugin)
+    local items = {
+        {
+            text_func = function()
+                local key = plugin.settings:readSetting(Settings.KEY.PROVIDER)
+                    or (plugin.CONFIGURATION and plugin.CONFIGURATION.provider)
+                local display = key and ProviderRegistry.KNOWN[key] or _("not configured")
+                return T(_("Provider: %1"), display)
+            end,
+            keep_menu_open = true,
+            callback = function(touchmenu_instance)
+                showProviderPicker(plugin, function()
+                    if touchmenu_instance then touchmenu_instance:updateItems() end
+                end)
+            end,
+        },
+        {
+            text_func = function()
+                local name = plugin.settings:readSetting(Settings.KEY.VOICE_NAME)
+                return T(_("Voice: %1"), name or _("(none selected)"))
+            end,
+            keep_menu_open = true,
+            callback = function(touchmenu_instance)
+                showVoicePicker(plugin, function()
+                    if touchmenu_instance then touchmenu_instance:updateItems() end
+                end)
+            end,
+        },
+        {
+            text = _("About Speakword"),
+            keep_menu_open = true,
+            callback = function()
+                local meta = plugin.meta or {}
+                showInfo(T("%1 %2\n\n%3",
+                    meta.fullname or "Speakword",
+                    meta.version or "",
+                    meta.description or ""))
+            end,
+        },
+    }
+    return items
+end
+
+return Settings
