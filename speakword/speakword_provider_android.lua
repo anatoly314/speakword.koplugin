@@ -358,17 +358,13 @@ end
 --- Returns (true, voices_table) | (false, error_code[, detail]).
 function AndroidTts:list_voices()
     if not Device:isAndroid() then
-        return false, Errors.CODE.NOT_CONFIGURED,
-            "Android TTS provider only works on Android devices."
+        return false, Errors.CODE.PLATFORM_UNSUPPORTED
     end
     if not initTts() then
-        return false, Errors.CODE.NOT_CONFIGURED,
-            "Android TTS engine could not be loaded. " ..
-            "Check that a TTS engine (e.g. com.google.android.tts) is installed."
+        return false, Errors.CODE.ENGINE_NOT_AVAILABLE
     end
     if not waitForEngineReady(INIT_TIMEOUT_MS) then
-        return false, Errors.CODE.NOT_CONFIGURED,
-            "Android TTS engine did not finish initializing."
+        return false, Errors.CODE.ENGINE_INIT_TIMEOUT
     end
 
     local android = _state.android
@@ -412,9 +408,7 @@ function AndroidTts:list_voices()
     table.sort(voices, function(a, b) return (a.name or "") < (b.name or "") end)
 
     if #voices == 0 then
-        return false, Errors.CODE.MALFORMED_RESPONSE,
-            "Android TTS engine reported no installed voices. " ..
-            "Open the system TTS settings and download a voice pack."
+        return false, Errors.CODE.NO_VOICES_INSTALLED
     end
 
     return true, voices
@@ -430,16 +424,13 @@ function AndroidTts:synthesize(text, voice_id)
         return false, Errors.CODE.NO_VOICE_SELECTED
     end
     if not Device:isAndroid() then
-        return false, Errors.CODE.NOT_CONFIGURED,
-            "Android TTS provider only works on Android devices."
+        return false, Errors.CODE.PLATFORM_UNSUPPORTED
     end
     if not initTts() then
-        return false, Errors.CODE.NOT_CONFIGURED,
-            "Android TTS engine could not be loaded."
+        return false, Errors.CODE.ENGINE_NOT_AVAILABLE
     end
     if not waitForEngineReady(INIT_TIMEOUT_MS) then
-        return false, Errors.CODE.NOT_CONFIGURED,
-            "Android TTS engine did not finish initializing."
+        return false, Errors.CODE.ENGINE_INIT_TIMEOUT
     end
 
     -- Best-effort: remove any stale temp file so a partial read can't be

@@ -25,6 +25,10 @@ Errors.CODE = {
     NO_VOICE_SELECTED  = "no_voice_selected",   -- user hasn't picked one yet
     NOT_CONFIGURED     = "not_configured",      -- API key missing
     EMPTY_INPUT        = "empty_input",         -- nothing to speak
+    ENGINE_NOT_AVAILABLE = "engine_not_available", -- on-device TTS engine missing/unloadable
+    ENGINE_INIT_TIMEOUT  = "engine_init_timeout",  -- on-device TTS engine took too long to init
+    NO_VOICES_INSTALLED  = "no_voices_installed",  -- engine loaded but has no voice packs
+    PLATFORM_UNSUPPORTED = "platform_unsupported", -- provider not available on this platform
     UNKNOWN            = "unknown",
 }
 
@@ -42,6 +46,10 @@ local MESSAGES = {
     [Errors.CODE.NO_VOICE_SELECTED]  = _("No voice selected. Open Settings → Speakword and pick one."),
     [Errors.CODE.NOT_CONFIGURED]     = _("Speakword is not configured. Copy configuration.sample.lua to configuration.lua and add your API key."),
     [Errors.CODE.EMPTY_INPUT]        = _("Nothing to speak."),
+    [Errors.CODE.ENGINE_NOT_AVAILABLE] = _("Android TTS engine could not be loaded. Make sure a TTS engine app (e.g. Speech Services by Google) is installed and enabled."),
+    [Errors.CODE.ENGINE_INIT_TIMEOUT]  = _("Android TTS engine did not finish initializing in time. Try opening the system TTS settings to ensure the engine is set up, then try again."),
+    [Errors.CODE.NO_VOICES_INSTALLED]  = _("No voices installed for the Android TTS engine. Open Android Settings → System → Languages & input → Text-to-speech output and install a voice pack."),
+    [Errors.CODE.PLATFORM_UNSUPPORTED] = _("This provider is only available on Android."),
     [Errors.CODE.UNKNOWN]            = _("Speakword failed (unknown error). Check the logs."),
 }
 
