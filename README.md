@@ -90,30 +90,49 @@ you'll need to pick again.
 - **Phrase / sentence**: long-press to highlight, then tap "Speak" on the
   highlight dialog.
 
-The first synthesis for a given (text, voice, model) hits the API and
-caches the mp3. Subsequent taps replay the cached file instantly.
+For ElevenLabs, the first synthesis for a given (text, voice, model) hits
+the API and caches the audio. Subsequent taps replay the cached file
+instantly.
+
+For Android System TTS, there is no cache and no file — synthesis is
+on-device, so re-running it costs nothing. See *Audio playback* below for
+the architectural reason.
 
 ## Audio playback
 
-On Android, Speakword plays audio **in-process** via a small bundled `.dex`
-that wraps Android's `MediaPlayer` and is loaded at runtime through
-`DexClassLoader`. KOReader stays foreground — no music-player overlay, no
-"open with…" chooser. The compiled `audio_helper.dex` (~7.5 KB; also bundles
-the `TtsHelper` class used by the Android System TTS provider) ships in
-the repo; only contributors editing `speakword/android/AudioPlayer.java`
-or `speakword/android/TtsHelper.java` need the Android SDK to rebuild it
+The two providers take different paths:
+
+- **Android System TTS** plays via `TextToSpeech.speak()` — the engine
+  synthesizes and outputs to the speakers itself. No file, no MediaPlayer,
+  no MIME-type negotiation, no cache. This bypasses Android's mediaserver
+  binder pipeline entirely, which means it survives cross-plugin
+  interactions that would otherwise corrupt MediaPlayer's binder transport
+  (notably HTTPS streaming responses from `assistant.koplugin`'s AI
+  Dictionary feature, which on some Android 13 builds — including Boox
+  China firmware — causes subsequent `MediaPlayer.setDataSource` calls to
+  fail with `FAILED BINDER TRANSACTION`).
+- **ElevenLabs** plays via Android's `MediaPlayer`, loaded into KOReader's
+  process through a small bundled `.dex` (`audio_helper.dex`). The dex
+  wraps `MediaPlayer` and `TextToSpeech` and is loaded at runtime via
+  `DexClassLoader`. KOReader stays foreground — no music-player overlay,
+  no "open with…" chooser. **However, on Android 13 / Boox the
+  `MediaPlayer` path is fragile: any `assistant.koplugin` AI Dictionary
+  invocation in the same KOReader session leaves the mediaserver binder
+  pool in a state that rejects subsequent setDataSource calls. Restart
+  KOReader to recover.** The Android TTS provider is not affected.
+
+The compiled `audio_helper.dex` (~10 KB) ships in the repo; only
+contributors editing `speakword/android/AudioPlayer.java` or
+`speakword/android/TtsHelper.java` need the Android SDK to rebuild it
 via `speakword/android/build-dex.sh`.
 
-This matters because some devices (Boox China firmware among them) ship
-without any app registered as an `audio/mpeg` intent handler — under the
-intent-dispatch approach, taps would silently fail. The bundled MediaPlayer
-sidesteps that entirely.
+On non-Android platforms (desktop Linux dev builds, Kobo, Kindle), the
+ElevenLabs path falls back to `Device:openLink("file://...")`. You can
+also force this fallback on Android via Tools → Speakword TTS → **Audio
+backend** → Intent (rarely useful — most Boox firmwares ship without any
+`audio/mpeg` intent handler, so the intent dispatches silently).
 
-On other platforms (desktop Linux, Kobo, Kindle) the plugin falls back to
-`Device:openLink("file://...")`. You can also force this fallback on
-Android via Tools → Speakword TTS → **Audio backend** → Intent.
-
-The Java wrapper is adapted from
+The MediaPlayer Java wrapper and JNI bridge are adapted from
 [`audiobook.koplugin`](https://github.com/stradichenko/audiobook.koplugin)
 (AGPL-3.0); license attribution lives in the source headers.
 
