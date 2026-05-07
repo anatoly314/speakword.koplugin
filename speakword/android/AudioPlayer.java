@@ -60,7 +60,22 @@ public class AudioPlayer {
         synchronized (mpLock) {
             try {
                 mediaPlayer = new MediaPlayer();
-                mediaPlayer.setDataSource(path);
+                // Open the file in our own process and hand MediaPlayer a
+                // FileDescriptor instead of a path. The String overload
+                // routes through Android's storage permission system, which
+                // on Android 13 (scoped storage / SELinux) blocks
+                // MediaPlayer's separate process from reading some
+                // app-public paths under /storage/emulated/0/... and fails
+                // with "setDataSourceFD failed.: status=0x80000000".
+                // Passing an FD we already opened bypasses that check --
+                // MediaPlayer dup()s the FD internally, so closing our
+                // FileInputStream after setDataSource is safe.
+                java.io.FileInputStream fis = new java.io.FileInputStream(path);
+                try {
+                    mediaPlayer.setDataSource(fis.getFD());
+                } finally {
+                    try { fis.close(); } catch (java.io.IOException ignored) {}
+                }
                 mediaPlayer.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
                     @Override
                     public void onCompletion(MediaPlayer mp) {
@@ -79,6 +94,14 @@ public class AudioPlayer {
                 mediaPlayer.prepare();
                 mediaPlayer.start();
                 return mediaPlayer.getDuration();
+            } catch (java.io.FileNotFoundException e) {
+                playbackDone = true;
+                abandonAudioFocus();
+                if (mediaPlayer != null) {
+                    try { mediaPlayer.release(); } catch (Exception ignored) {}
+                    mediaPlayer = null;
+                }
+                return -1;
             } catch (Exception e) {
                 playbackDone = true;
                 abandonAudioFocus();
