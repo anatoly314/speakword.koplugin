@@ -26,6 +26,7 @@ local ProviderRegistry = {}
 -- render the provider dropdown. New providers must register here.
 ProviderRegistry.KNOWN = {
     elevenlabs = "ElevenLabs",
+    android    = "Android System TTS",
 }
 
 --- Instantiate the provider named by `key` from the user's CONFIGURATION

@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 #
-# Build audio_helper.dex from AudioPlayer.java using the Android SDK.
+# Build audio_helper.dex from the .java helper sources using the Android SDK.
+#
+# Currently bundled:
+#   - AudioPlayer.java  -- in-process MediaPlayer wrapper
+#   - TtsHelper.java    -- Android TextToSpeech wrapper for the
+#                          speakword_provider_android.lua provider
+#
+# Both classes go into the SAME .dex (audio_helper.dex), loaded once via
+# DexClassLoader. Splitting them would just double the load cost.
 #
 # Adapted from audiobook.koplugin/android/build-dex.sh
 #   https://github.com/stradichenko/audiobook.koplugin (AGPL-3.0)
@@ -17,6 +25,11 @@
 #
 # Output:
 #   speakword/android/audio_helper.dex
+#
+# Reproducibility: javac + d8 are deterministic given fixed input bytes,
+# fixed --min-api, and a stable file ordering passed to d8. We therefore
+# enumerate inputs explicitly (no glob ordering surprises) and build in a
+# scratch directory we wipe each run.
 #
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -59,19 +72,35 @@ echo "Build tools: $BT_DIR"
 echo "Platform:    $PLATFORM"
 echo "d8:          $D8"
 
+# Source list. Keep alphabetized so d8's output ordering stays stable across
+# runs (this is what makes the .dex bit-for-bit reproducible).
+SOURCES=(
+    AudioPlayer.java
+    TtsHelper.java
+)
+
 # Compile .java -> .class
-echo "Compiling AudioPlayer.java..."
+echo "Compiling: ${SOURCES[*]}"
+rm -rf build
 mkdir -p build
 javac -source 1.8 -target 1.8 \
     -classpath "$ANDROID_JAR" \
     -d build \
-    AudioPlayer.java
+    "${SOURCES[@]}"
 
-# Convert .class -> .dex (include any inner/anonymous classes).
+# Collect every emitted class (including inner / anonymous classes) for d8.
+# We sort the list so d8 sees a stable input order regardless of FS quirks.
+mapfile -t CLASSES < <(find build/com/speakword -name '*.class' | LC_ALL=C sort)
+
+if [[ ${#CLASSES[@]} -eq 0 ]]; then
+    echo "Error: no .class files produced under build/com/speakword/" >&2
+    exit 1
+fi
+
+echo "Dexing ${#CLASSES[@]} class(es)..."
 # --lib points d8 at android.jar so it can resolve framework types and
 # perform interface-default-method desugaring without warnings.
-echo "Dexing..."
-"$D8" --min-api 21 --lib "$ANDROID_JAR" --output . build/com/speakword/AudioPlayer*.class
+"$D8" --min-api 21 --lib "$ANDROID_JAR" --output . "${CLASSES[@]}"
 
 # d8 emits classes.dex; rename to our expected filename.
 mv classes.dex audio_helper.dex

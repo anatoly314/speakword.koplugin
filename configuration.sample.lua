@@ -10,13 +10,20 @@
 
 local CONFIGURATION = {
 
-    -- Which TTS provider to use. Currently the only supported value is
-    -- "elevenlabs". Future providers (Google Cloud TTS, Azure, Polly, ...)
-    -- will be added under additional keys here.
+    -- Which TTS provider to use. Supported values:
+    --   "elevenlabs" — cloud TTS (paid, free tier 10K credits/month).
+    --   "android"    — the device's built-in system TTS (free, on-device,
+    --                  Android-only). Quality is noticeably lower than
+    --                  ElevenLabs but works offline once a voice pack is
+    --                  downloaded.
+    -- The user can also switch providers at runtime via Tools → Speakword TTS
+    -- → Provider; this `provider =` field is just the initial default.
     provider = "elevenlabs",
 
     -- Per-provider settings. Each key matches a provider implementation
-    -- in `speakword/speakword_provider_<key>.lua`.
+    -- in `speakword/speakword_provider_<key>.lua`. Even providers that
+    -- require no configuration must have an entry here (an empty table is
+    -- fine) so the registry can identify them as enabled.
     provider_settings = {
         elevenlabs = {
             -- Get a free key at https://elevenlabs.io  (free tier: 10K
@@ -31,6 +38,30 @@ local CONFIGURATION = {
             -- eleven_multilingual_v2 sounds noticeably better but costs ~2x
             -- credits. See https://elevenlabs.io/docs/models
             model_id = "eleven_flash_v2_5",
+        },
+        android = {
+            -- Android System TTS: no API key, no base URL — the engine is
+            -- whatever the device has installed (typically
+            -- com.google.android.tts on Onyx/Boox devices, samsung TTS on
+            -- Samsung, etc.). This block is intentionally near-empty;
+            -- you only need to keep the table present.
+            --
+            -- Requires:
+            --   1. An Android device. On non-Android platforms this provider
+            --      will refuse to list voices.
+            --   2. A TTS engine installed (most stock Android already has
+            --      Speech Services by Google).
+            --   3. At least one voice pack downloaded. On Android, this is
+            --      done via Settings → System → Languages & input →
+            --      Text-to-speech output → Install voice data. Without a
+            --      downloaded pack, voices may exist in the picker but
+            --      synthesis will fail with a "missing voice data" error.
+            --
+            -- Optional override: `model_id` is mixed into the per-book cache
+            -- filename. If you switch TTS engines (e.g. Google -> Samsung)
+            -- and want previously cached audio to be regenerated under the
+            -- new voice, change this string.
+            model_id = "android_default",
         },
     },
 }
