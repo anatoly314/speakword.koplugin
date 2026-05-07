@@ -21,6 +21,40 @@ local Cache = {}
 -- 143 bytes including extension).
 local MAX_READABLE_LEN = 60
 
+--- Sniff a synthesized audio buffer's container format from its magic bytes
+--- and return the matching file extension (with leading dot). Different TTS
+--- providers hand us different containers — ElevenLabs returns real MP3,
+--- Android's TextToSpeech.synthesizeToFile always emits WAV/PCM — and the
+--- on-disk extension has to match, otherwise Android MediaPlayer's content
+--- sniffer rejects the file with status=0x80000000.
+---
+--- Falls back to ".audio" for anything we can't identify, which is still
+--- safer than a confidently-wrong extension: most players will at least
+--- attempt content-based detection on an unknown extension.
+---
+--- Exported so the ephemeral and preview write paths in main.lua /
+--- speakword_settings.lua can reuse this without duplicating the table of
+--- magic numbers.
+--- @param bytes string  raw audio buffer (only first ~12 bytes inspected)
+--- @return string  one of ".mp3", ".wav", ".ogg", ".audio"
+function Cache.audioExtensionFor(bytes)
+    if not bytes or #bytes < 4 then return ".audio" end
+    local b = bytes:sub(1, 4)
+    -- "RIFF...." container header — WAV (also AVI, but TTS won't emit that).
+    if b == "RIFF" then return ".wav" end
+    -- "ID3" tag prefix marks a tagged MP3 file.
+    if b:sub(1, 3) == "ID3" then return ".mp3" end
+    -- Bare MPEG audio frame sync: 0xFF followed by one of 0xFB / 0xF3 / 0xF2
+    -- (MPEG-1 / MPEG-2 / MPEG-2.5 Layer III, the variants real TTS APIs emit).
+    local b1, b2 = bytes:byte(1), bytes:byte(2)
+    if b1 == 0xFF and (b2 == 0xFB or b2 == 0xF3 or b2 == 0xF2) then
+        return ".mp3"
+    end
+    -- "OggS" page header — Ogg (Vorbis or Opus payload).
+    if b == "OggS" then return ".ogg" end
+    return ".audio"
+end
+
 local function sanitizeForFilename(s)
     -- Strip control chars and characters that are illegal on FAT/exFAT/NTFS
     -- (Boox SD cards may be exFAT).
@@ -80,28 +114,68 @@ end
 
 --- Compute the full cache path for the given (ui, text, voice_id, model_id).
 --- This does NOT touch the filesystem. Use exists() / read() / write() for I/O.
+---
+--- The extension argument is optional and defaults to ".mp3" so existing
+--- callers (and existing on-disk files) keep working. write() overrides this
+--- by sniffing the actual audio bytes — so an Android-TTS WAV gets ".wav"
+--- and an ElevenLabs MP3 gets ".mp3", same fingerprint, no collision since
+--- the suffix differs.
+--- @param extension string|nil  e.g. ".wav" / ".mp3" / ".ogg" / ".audio"
 --- @return string|nil path  nil if no document context (filemanager)
-function Cache.pathFor(ui, text, voice_id, model_id)
+function Cache.pathFor(ui, text, voice_id, model_id, extension)
     local dir = getBookCacheDir(ui)
     if not dir then return nil end
 
     local readable = sanitizeForFilename(text or "")
     if readable == "" then readable = "speech" end
     local fp = fingerprint(text, voice_id, model_id)
-    return dir .. readable .. "-" .. fp .. ".mp3"
+    local ext = extension or ".mp3"
+    return dir .. readable .. "-" .. fp .. ext
+end
+
+--- Peek the first 12 bytes of a file. Returns "" on any error.
+--- Used to validate that a cached file's content actually matches its
+--- extension before we trust the cache hit.
+local function peekMagic(path)
+    local f = io.open(path, "rb")
+    if not f then return "" end
+    local head = f:read(12) or ""
+    f:close()
+    return head
 end
 
 --- Does a cached file already exist for these parameters?
+---
+--- We don't know which extension the bytes will demand until we've seen them,
+--- so we probe each known audio extension. The fingerprint stays stable
+--- across formats, so at most one of these *should* match — and we further
+--- validate the file's magic against the extension to skip stale entries
+--- left behind by the old "always .mp3" code path (a WAV-content file sitting
+--- under an .mp3 name is treated as a miss so it gets re-synthesized).
 function Cache.exists(ui, text, voice_id, model_id)
-    local path = Cache.pathFor(ui, text, voice_id, model_id)
-    if not path then return false end
-    return lfs.attributes(path, "mode") == "file", path
+    for _, ext in ipairs({ ".mp3", ".wav", ".ogg", ".audio" }) do
+        local path = Cache.pathFor(ui, text, voice_id, model_id, ext)
+        if path and lfs.attributes(path, "mode") == "file" then
+            local actual = Cache.audioExtensionFor(peekMagic(path))
+            -- ".audio" is our unknown-format fallback — accept whatever's
+            -- there, since we can't do better than the file we wrote.
+            if actual == ext or ext == ".audio" then
+                return true, path
+            end
+        end
+    end
+    return false
 end
 
 --- Persist audio bytes to the cache. Creates the per-book folder if needed.
+--- The on-disk extension is derived from the bytes' magic header — see
+--- audioExtensionFor — so providers that emit different containers
+--- (Android TTS = WAV, ElevenLabs = MP3) get correctly-typed files instead
+--- of mislabeled blobs that MediaPlayer rejects.
 --- Returns (true, path) on success, (false, error_code) on failure.
 function Cache.write(ui, text, voice_id, model_id, audio_bytes)
-    local path = Cache.pathFor(ui, text, voice_id, model_id)
+    local ext = Cache.audioExtensionFor(audio_bytes)
+    local path = Cache.pathFor(ui, text, voice_id, model_id, ext)
     if not path then return false, Errors.CODE.DISK end
 
     local dir = path:match("(.*/)")

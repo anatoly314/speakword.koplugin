@@ -59,7 +59,12 @@ local META_PATH     = PLUGIN_DIR .. "_meta.lua"
 -- Throwaway path used when the user has turned caching off. Lives in
 -- koreader's cache dir (never inside the per-book folder) and is overwritten
 -- on every Speak so it can't accumulate.
-local EPHEMERAL_PATH = DataStorage:getDataDir() .. "/cache/speakword-ephemeral.mp3"
+--
+-- The extension is appended at write time based on the actual audio bytes
+-- (see Cache.audioExtensionFor) — Android TTS hands us WAV, ElevenLabs hands
+-- us MP3, and Android MediaPlayer's content sniffer will refuse a WAV file
+-- saved with an .mp3 extension.
+local EPHEMERAL_PATH_PREFIX = DataStorage:getDataDir() .. "/cache/speakword-ephemeral"
 
 --- Load the user's configuration.lua. If it's missing or syntactically
 --- broken, we don't crash — we record the error and surface it through
@@ -277,7 +282,12 @@ function Speakword:speak(text)
                 -- Ephemeral path: single shared slot, overwritten each call.
                 -- Binary mode matters on platforms where text mode mangles
                 -- 0x0D bytes (MP3 frames absolutely contain those).
-                local f, ferr = io.open(EPHEMERAL_PATH, "wb")
+                --
+                -- Extension is derived from the bytes themselves so MediaPlayer
+                -- doesn't reject e.g. an Android-TTS WAV saved as .mp3.
+                local ephemeral_path = EPHEMERAL_PATH_PREFIX
+                    .. Cache.audioExtensionFor(audio_bytes)
+                local f, ferr = io.open(ephemeral_path, "wb")
                 if not f then
                     logger.warn("speakword: ephemeral open failed:", ferr)
                     return showError(Errors.CODE.DISK, ferr)
@@ -288,10 +298,10 @@ function Speakword:speak(text)
                 f:close()
                 if not ok_write then
                     logger.warn("speakword: ephemeral write failed:", write_err)
-                    os.remove(EPHEMERAL_PATH)
+                    os.remove(ephemeral_path)
                     return showError(Errors.CODE.DISK, write_err)
                 end
-                play_path = EPHEMERAL_PATH
+                play_path = ephemeral_path
             end
 
             local played, perr = Player.play(play_path)

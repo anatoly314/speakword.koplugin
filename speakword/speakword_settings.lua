@@ -18,6 +18,7 @@ local logger           = require("logger")
 local _                = require("gettext")
 local T                = require("ffi/util").template
 
+local Cache            = require("speakword/speakword_cache")
 local Errors           = require("speakword/speakword_errors")
 local Player           = require("speakword/speakword_player")
 local ProviderRegistry = require("speakword/speakword_provider")
@@ -29,10 +30,14 @@ local Settings = {}
 -- doesn't burn quota.
 local PREVIEW_TEXT = "Let's make it speak"
 
--- Where the preview MP3 is written. Lives in koreader's cache dir (NOT the
+-- Where the preview audio is written. Lives in koreader's cache dir (NOT the
 -- per-book notes folder), and is overwritten on every preview, so it never
 -- pollutes the user's library or grows unbounded.
-local PREVIEW_PATH = DataStorage:getDataDir() .. "/cache/speakword-preview.mp3"
+--
+-- The extension is appended at write time based on the actual audio bytes
+-- (see Cache.audioExtensionFor). Android TTS emits WAV, ElevenLabs emits
+-- MP3 — using the wrong extension makes Android MediaPlayer refuse the file.
+local PREVIEW_PATH_PREFIX = DataStorage:getDataDir() .. "/cache/speakword-preview"
 
 -- Settings keys. Centralized so the entry-point and the UI agree.
 Settings.KEY = {
@@ -135,7 +140,12 @@ local function previewVoice(provider, voice_id)
             -- Write the audio bytes to our single preview slot. Binary mode
             -- matters on platforms where text mode mangles 0x0D bytes (MP3
             -- frames absolutely contain those).
-            local f, ferr = io.open(PREVIEW_PATH, "wb")
+            --
+            -- Extension is derived from the bytes themselves so MediaPlayer
+            -- doesn't reject e.g. an Android-TTS WAV saved as .mp3.
+            local preview_path = PREVIEW_PATH_PREFIX
+                .. Cache.audioExtensionFor(audio_or_code)
+            local f, ferr = io.open(preview_path, "wb")
             if not f then
                 logger.warn("speakword: preview open failed:", ferr)
                 return showError(Errors.CODE.DISK, ferr)
@@ -143,7 +153,7 @@ local function previewVoice(provider, voice_id)
             f:write(audio_or_code)
             f:close()
 
-            local played, perr = Player.play(PREVIEW_PATH)
+            local played, perr = Player.play(preview_path)
             if not played then
                 return showError(perr)
             end
