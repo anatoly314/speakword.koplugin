@@ -111,9 +111,9 @@ The settings UI dropdown picks up the new provider automatically.
 
 Plugin scaffolding and the per-book folder convention adapted from
 [`assistant.koplugin`](https://github.com/omer-faruq/assistant.koplugin)
-(GPL-3.0). HTTP machinery follows the same socket.http / ltn12 / Trapper
+(AGPL-3.0). HTTP machinery follows the same socket.http / ltn12 / Trapper
 pattern KOReader uses internally.
 
 ## License
 
-GPL-3.0. See `LICENSE`.
+AGPL-3.0. See `LICENSE`. The Android audio playback wrapper is adapted from [audiobook.koplugin](https://github.com/stradichenko/audiobook.koplugin) (also AGPL-3.0).
