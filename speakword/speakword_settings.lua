@@ -26,6 +26,14 @@ Settings.KEY = {
     PROVIDER = "provider",
     VOICE_ID = "voice_id",
     VOICE_NAME = "voice_name", -- cached for display only
+    AUDIO_BACKEND = "audio_backend", -- "auto" | "intent"
+}
+
+-- Display labels for audio_backend values. The actual key is what gets
+-- persisted; the label is what the user sees.
+local AUDIO_BACKEND_LABELS = {
+    auto   = _("Auto (in-process on Android)"),
+    intent = _("System intent (legacy)"),
 }
 
 local function showInfo(text)
@@ -135,6 +143,13 @@ local function showVoicePicker(plugin, refresh_parent)
     end)
 end
 
+--- Read the current audio_backend setting, defaulting to "auto".
+local function currentAudioBackend(plugin)
+    local v = plugin.settings:readSetting(Settings.KEY.AUDIO_BACKEND)
+    if v == "intent" then return "intent" end
+    return "auto"
+end
+
 --- Build the list of menu rows that go under "Tools → Speakword".
 --- Returned table is shaped for KOReader's TouchMenu (sub_item_table).
 function Settings.genMenuItems(plugin)
@@ -163,6 +178,38 @@ function Settings.genMenuItems(plugin)
                 showVoicePicker(plugin, function()
                     if touchmenu_instance then touchmenu_instance:updateItems() end
                 end)
+            end,
+        },
+        {
+            -- Audio backend toggle. "Auto" is the default and tries the
+            -- in-process MediaPlayer wrapper on Android (falling back to a
+            -- system intent on failure). "Intent" forces the original
+            -- Device:openLink path — useful as a debugging escape hatch or
+            -- on Android devices where in-process audio misbehaves.
+            text_func = function()
+                local key = currentAudioBackend(plugin)
+                local label = AUDIO_BACKEND_LABELS[key] or key
+                return T(_("Audio backend: %1"), label)
+            end,
+            keep_menu_open = true,
+            sub_item_table_func = function()
+                local function makeOption(value)
+                    return {
+                        text = AUDIO_BACKEND_LABELS[value] or value,
+                        checked_func = function()
+                            return currentAudioBackend(plugin) == value
+                        end,
+                        callback = function()
+                            plugin.settings:saveSetting(
+                                Settings.KEY.AUDIO_BACKEND, value)
+                            plugin.updated = true
+                        end,
+                    }
+                end
+                return {
+                    makeOption("auto"),
+                    makeOption("intent"),
+                }
             end,
         },
         {
