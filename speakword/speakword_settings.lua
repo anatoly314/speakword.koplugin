@@ -122,7 +122,31 @@ end
 --- folder isn't polluted with sample-sentence files. Failures are surfaced
 --- via showError; selection-saving is the caller's job and runs regardless
 --- of whether this succeeds.
+---
+--- For providers that advertise supports_direct_playback (Android TTS), we
+--- skip the bytes → preview-file → Player.play pipeline and let the
+--- provider play through its own audio output. This avoids MediaPlayer
+--- entirely, which is unreliable on the user's Boox Note X5 after
+--- assistant.koplugin runs an AI-Dict HTTPS streaming call.
 local function previewVoice(provider, voice_id)
+    if provider.supports_direct_playback and provider:supports_direct_playback() then
+        -- TTS is on-device, so NetworkMgr:runWhenOnline is a no-op here —
+        -- we keep it for symmetry with the existing flow (and so the
+        -- behaviour stays identical if a future provider toggles its
+        -- capability flag based on an online/offline mode).
+        NetworkMgr:runWhenOnline(function()
+            Trapper:wrap(function()
+                local progress = InfoMessage:new{ text = _("Synthesizing preview…") }
+                UIManager:show(progress)
+                UIManager:forceRePaint()
+                local ok, code, detail = provider:speak_now(PREVIEW_TEXT, voice_id)
+                UIManager:close(progress)
+                if not ok then return showError(code, detail) end
+            end)
+        end)
+        return
+    end
+
     NetworkMgr:runWhenOnline(function()
         Trapper:wrap(function()
             local progress = InfoMessage:new{ text = _("Synthesizing preview…") }

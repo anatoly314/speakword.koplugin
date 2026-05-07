@@ -237,6 +237,23 @@ function Speakword:speak(text)
         return showError(code, detail)
     end
 
+    -- Direct-playback path (Android TTS): the provider does its own audio
+    -- output via TextToSpeech.speak(), so we skip the entire bytes →
+    -- cache → MediaPlayer pipeline. No file is written. This is the
+    -- workaround for the Android-13 / Boox Note X5 mediaserver binder
+    -- corruption that strikes after assistant.koplugin's AI Dictionary
+    -- HTTPS streaming call (parcel size = 432 binder transaction
+    -- failure). MediaPlayer is genuinely unusable in-process after that.
+    if provider.supports_direct_playback and provider:supports_direct_playback() then
+        local progress = InfoMessage:new{ text = _("Speaking…") }
+        UIManager:show(progress)
+        UIManager:forceRePaint()
+        local ok, dcode, ddetail = provider:speak_now(text, voice_id)
+        UIManager:close(progress)
+        if not ok then return showError(dcode, ddetail) end
+        return
+    end
+
     local cache_enabled = SettingsUI.cacheEnabled(self)
 
     -- Cache hit: skip the network entirely. Only consulted when caching is on

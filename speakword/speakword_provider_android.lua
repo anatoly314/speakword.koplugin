@@ -19,9 +19,23 @@ speakword_player; classloading is cheap, the classloader is per-module
 state, and avoiding cross-module state coupling keeps the failure modes
 local.
 
-The synth interface is bytes-in / bytes-out, so we synthesize to a temp WAV
-on the device, read the bytes back, and return them. The caller (main.lua)
-handles cache persistence vs ephemeral storage uniformly across providers.
+This provider exposes TWO synth paths:
+
+  1. synthesize(text, voice_id): bytes-in / bytes-out — synthesizes to a
+     temp WAV on the device, reads the bytes back, returns them. Kept
+     for the bytes abstraction the cache layer is built around. Not
+     currently used on Android because of (2).
+
+  2. speak_now(text, voice_id): file-less, plays through the engine's
+     own audio output via TextToSpeech.speak(). This bypasses
+     MediaPlayer entirely, working around the Android-13 / Boox Note X5
+     mediaserver binder corruption ("FAILED BINDER TRANSACTION (parcel
+     size = 432)") that strikes after assistant.koplugin's AI
+     Dictionary HTTPS streaming call. This is the default Android path;
+     the capability flag supports_direct_playback() exposes it.
+
+The caller (main.lua) branches on supports_direct_playback() and skips
+the cache + Player.play flow when the provider plays the audio itself.
 
 The JNI plumbing (DexClassLoader bootstrap, method-id caching, GlobalRef
 lifetime management, polling-friendly init) is adapted from
@@ -250,6 +264,8 @@ local function initTts()
         m.listVoices         = env[0].GetMethodID(env, helper_class, "listVoices", "()Ljava/lang/String;")
         m.synthesizeToFile   = env[0].GetMethodID(env, helper_class, "synthesizeToFile",
             "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Z")
+        m.speakDirect        = env[0].GetMethodID(env, helper_class, "speakDirect",
+            "(Ljava/lang/String;Ljava/lang/String;)Z")
         m.isSynthesisDone    = env[0].GetMethodID(env, helper_class, "isSynthesisDone", "()Z")
         m.wasSynthesisError  = env[0].GetMethodID(env, helper_class, "wasSynthesisError", "()Z")
         m.shutdown           = env[0].GetMethodID(env, helper_class, "shutdown", "()V")
@@ -258,6 +274,7 @@ local function initTts()
                 or m.getInitStatus      == nil
                 or m.listVoices         == nil
                 or m.synthesizeToFile   == nil
+                or m.speakDirect        == nil
                 or m.isSynthesisDone    == nil
                 or m.wasSynthesisError  == nil
                 or m.shutdown           == nil then
@@ -514,6 +531,103 @@ function AndroidTts:synthesize(text, voice_id)
     end
 
     return true, bytes
+end
+
+--- Capability flag consulted by main.lua / settings.lua to decide whether
+--- to skip the synth-to-file → cache → Player.play pipeline and let the
+--- provider play the audio itself. Always true on this provider — the
+--- whole reason for the in-process direct path is that MediaPlayer is
+--- unreliable on the target device after assistant.koplugin's AI Dict.
+--- @return boolean
+function AndroidTts:supports_direct_playback()
+    return true
+end
+
+--- Synthesize `text` AND play it back through the Android TTS engine's
+--- own audio output (no file, no MediaPlayer).
+---
+--- Returns (true) on success — the engine has finished speaking by the
+--- time we return. Returns (false, error_code[, detail]) on failure.
+---
+--- This is the path actually used on Android. The bytes-out `synthesize`
+--- method is preserved for the abstraction (and tests) but is not
+--- exercised by the live UI.
+function AndroidTts:speak_now(text, voice_id)
+    if not text or text == "" then
+        return false, Errors.CODE.EMPTY_INPUT
+    end
+    if not voice_id or voice_id == "" then
+        return false, Errors.CODE.NO_VOICE_SELECTED
+    end
+    if not Device:isAndroid() then
+        return false, Errors.CODE.PLATFORM_UNSUPPORTED
+    end
+    if not initTts() then
+        return false, Errors.CODE.ENGINE_NOT_AVAILABLE
+    end
+    if not waitForEngineReady(INIT_TIMEOUT_MS) then
+        return false, Errors.CODE.ENGINE_INIT_TIMEOUT
+    end
+
+    local android = _state.android
+
+    -- Dispatch the async speak.
+    local dispatch_ok = android.jni:context(android.app.activity.vm, function(jni)
+        local env = jni.env
+        local j_text  = env[0].NewStringUTF(env, text)
+        local j_voice = env[0].NewStringUTF(env, voice_id)
+        local r = env[0].CallBooleanMethod(env,
+            _state.helper_ref, _state.method.speakDirect,
+            j_text, j_voice)
+        env[0].DeleteLocalRef(env, j_text)
+        env[0].DeleteLocalRef(env, j_voice)
+        if checkException(env) then return false end
+        return r ~= 0
+    end)
+
+    if not dispatch_ok then
+        return false, Errors.CODE.UNKNOWN,
+            "TtsHelper.speakDirect() refused the request " ..
+            "(voice not found or engine not ready)."
+    end
+
+    -- Poll for completion. With QUEUE_FLUSH, "done" means the engine has
+    -- finished speaking the requested utterance. Same poll cadence as
+    -- synthesize() so the user sees a consistent latency profile.
+    local deadline = nowMs() + SYNTH_TIMEOUT_MS
+    local done, errored = false, false
+    while nowMs() < deadline do
+        local d, e = android.jni:context(android.app.activity.vm, function(jni)
+            local env = jni.env
+            local jd = env[0].CallBooleanMethod(env,
+                _state.helper_ref, _state.method.isSynthesisDone)
+            if checkException(env) then return true, true end
+            if jd ~= 0 then
+                local je = env[0].CallBooleanMethod(env,
+                    _state.helper_ref, _state.method.wasSynthesisError)
+                if checkException(env) then return true, true end
+                return true, je ~= 0
+            end
+            return false, false
+        end)
+        done    = d
+        errored = e
+        if done then break end
+        os.execute("usleep 50000")  -- 50 ms
+    end
+
+    if not done then
+        return false, Errors.CODE.NETWORK,
+            "Android TTS playback timed out. " ..
+            "The engine may need a voice pack downloaded for offline use."
+    end
+    if errored then
+        return false, Errors.CODE.UNKNOWN,
+            "Android TTS engine reported a playback error " ..
+            "(missing voice data, unsupported language, or engine bug)."
+    end
+
+    return true
 end
 
 return AndroidTts

@@ -9,10 +9,16 @@
  * Speakword's variant differs from audiobook's in two ways:
  *   1. Voice listing: TextToSpeech.getVoices() is exposed so the user can
  *      pick a voice in the settings UI (audiobook hardcodes Locale.US).
- *   2. No synth-then-play pipeline: the rest of speakword treats the audio
- *      as a byte buffer that the cache layer persists, so we only need
- *      synthesizeToFile + a poll-friendly done flag. MediaPlayer playback
- *      lives in AudioPlayer.java in the same .dex.
+ *   2. Two synth modes:
+ *        - synthesizeToFile + poll-friendly done flag: legacy bytes-out
+ *          path used when the caller wants to persist the audio.
+ *        - speakDirect: dispatches TextToSpeech.speak() and lets the engine
+ *          play through its own audio output. This bypasses MediaPlayer
+ *          entirely, which on Android 13 / Boox Note X5 gets its
+ *          mediaserver binder corrupted after assistant.koplugin runs an
+ *          AI Dictionary HTTPS streaming call (parcel size = 432 binder
+ *          transaction failure). MediaPlayer playback for the
+ *          synthesizeToFile output still lives in AudioPlayer.java.
  *
  * Polling-friendly: callbacks update volatile fields that Lua reads via
  * isInitialized() / isSynthesisDone() / wasSynthesisError(), so the JNI
@@ -56,8 +62,13 @@ import java.util.Set;
  *      background thread). Lua polls isInitialized() until true (or an init
  *      error is reported via initStatus).
  *   2. listVoices() returns name|locale|name newline-separated rows.
- *   3. synthesizeToFile(text, voiceName, outputPath) dispatches the synth
- *      request. Lua polls isSynthesisDone() and checks wasSynthesisError().
+ *   3. Either:
+ *        - synthesizeToFile(text, voiceName, outputPath): writes a WAV the
+ *          caller can read back as bytes. Lua polls isSynthesisDone() and
+ *          checks wasSynthesisError().
+ *        - speakDirect(text, voiceName): plays straight through the engine's
+ *          own audio output. Same poll flags (isSynthesisDone /
+ *          wasSynthesisError) signal "done speaking".
  *   4. shutdown() releases the engine.
  *
  * Voice "id" used by Lua is Voice.getName() — stable across reboots on a
@@ -204,6 +215,44 @@ public class TtsHelper implements TextToSpeech.OnInitListener {
     }
 
     /**
+     * Resolve a voice by name and apply it via tts.setVoice(). Returns true
+     * on success (or true if voiceName is null/empty meaning "keep current
+     * voice"), false on lookup or apply failure. Mutates synthStatus to 2
+     * on failure so the caller can return immediately and Lua's poll sees
+     * the error.
+     */
+    private boolean applyVoice(String voiceName) {
+        if (voiceName == null || voiceName.isEmpty()) return true;
+        Voice picked = null;
+        try {
+            Set<Voice> voices = tts.getVoices();
+            if (voices != null) {
+                for (Voice v : voices) {
+                    if (v != null && voiceName.equals(v.getName())) {
+                        picked = v;
+                        break;
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+        if (picked == null) {
+            synthStatus = 2;
+            return false;
+        }
+        try {
+            int r = tts.setVoice(picked);
+            if (r != TextToSpeech.SUCCESS) {
+                synthStatus = 2;
+                return false;
+            }
+        } catch (Throwable t) {
+            synthStatus = 2;
+            return false;
+        }
+        return true;
+    }
+
+    /**
      * Dispatch an async synthesis to the given file path. Returns true if
      * the request was accepted (TextToSpeech.SUCCESS), false on synchronous
      * failure (engine not ready, file unwritable, voice not found, ...).
@@ -223,34 +272,8 @@ public class TtsHelper implements TextToSpeech.OnInitListener {
         // a stale "done" from a previous call.
         synthStatus = 0;
 
-        // Optional voice override.
-        if (voiceName != null && !voiceName.isEmpty()) {
-            Voice picked = null;
-            try {
-                Set<Voice> voices = tts.getVoices();
-                if (voices != null) {
-                    for (Voice v : voices) {
-                        if (v != null && voiceName.equals(v.getName())) {
-                            picked = v;
-                            break;
-                        }
-                    }
-                }
-            } catch (Throwable ignored) {}
-            if (picked == null) {
-                synthStatus = 2;
-                return false;
-            }
-            try {
-                int r = tts.setVoice(picked);
-                if (r != TextToSpeech.SUCCESS) {
-                    synthStatus = 2;
-                    return false;
-                }
-            } catch (Throwable t) {
-                synthStatus = 2;
-                return false;
-            }
+        if (!applyVoice(voiceName)) {
+            return false;
         }
 
         File outFile = new File(outputPath);
@@ -265,6 +288,54 @@ public class TtsHelper implements TextToSpeech.OnInitListener {
             String uttId = "speakword_" + System.currentTimeMillis()
                 + "_" + System.nanoTime();
             int r = tts.synthesizeToFile(text, new Bundle(), outFile, uttId);
+            if (r != TextToSpeech.SUCCESS) {
+                synthStatus = 2;
+                return false;
+            }
+            return true;
+        } catch (Throwable t) {
+            synthStatus = 2;
+            return false;
+        }
+    }
+
+    /**
+     * Dispatch an async TextToSpeech.speak(): the engine plays through its
+     * own audio output service, which uses a different binder pool than
+     * MediaPlayer's mediaserver. This is how we work around the
+     * "FAILED BINDER TRANSACTION (parcel size = 432)" mediaserver
+     * corruption that strikes on Android 13 / Boox Note X5 after
+     * assistant.koplugin's HTTPS streaming AI Dictionary call.
+     *
+     * Returns true if the request was accepted (TextToSpeech.SUCCESS),
+     * false on synchronous failure (engine not ready, voice not found,
+     * speak() rejected the request).
+     *
+     * Lua polls isSynthesisDone() / wasSynthesisError() — same flags as
+     * synthesizeToFile — so the existing polling plumbing works unchanged.
+     * "Done" here means the engine has finished speaking, not just
+     * synthesizing.
+     *
+     * If voiceName is null or empty, the engine's current voice is used.
+     */
+    public boolean speakDirect(String text, String voiceName) {
+        if (tts == null || initStatus != TextToSpeech.SUCCESS) return false;
+        if (text == null || text.isEmpty()) return false;
+
+        // Same ordering rationale as synthesizeToFile: reset BEFORE dispatch.
+        synthStatus = 0;
+
+        if (!applyVoice(voiceName)) {
+            return false;
+        }
+
+        try {
+            // QUEUE_FLUSH: any in-flight utterance is replaced. The user
+            // tapped Speak again, so honor the latest request. The
+            // utteranceId must be unique per call — see synthesizeToFile().
+            String uttId = "speakword_speak_" + System.currentTimeMillis()
+                + "_" + System.nanoTime();
+            int r = tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, uttId);
             if (r != TextToSpeech.SUCCESS) {
                 synthStatus = 2;
                 return false;
