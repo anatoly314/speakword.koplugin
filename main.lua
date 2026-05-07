@@ -56,6 +56,11 @@ local PLUGIN_DIR    = T("%1/plugins/speakword.koplugin/", DataStorage:getDataDir
 local CONFIG_PATH   = PLUGIN_DIR .. "configuration.lua"
 local META_PATH     = PLUGIN_DIR .. "_meta.lua"
 
+-- Throwaway path used when the user has turned caching off. Lives in
+-- koreader's cache dir (never inside the per-book folder) and is overwritten
+-- on every Speak so it can't accumulate.
+local EPHEMERAL_PATH = DataStorage:getDataDir() .. "/cache/speakword-ephemeral.mp3"
+
 --- Load the user's configuration.lua. If it's missing or syntactically
 --- broken, we don't crash — we record the error and surface it through
 --- isConfigured() so the UI can guide the user to fix it.
@@ -227,17 +232,22 @@ function Speakword:speak(text)
         return showError(code, detail)
     end
 
-    -- Cache hit: skip the network entirely.
-    local hit, cached_path = Cache.exists(self.ui, text, voice_id, provider.model_id)
-    if hit then
-        local ok, perr = Player.play(cached_path)
-        if not ok then return showError(perr) end
-        return
+    local cache_enabled = SettingsUI.cacheEnabled(self)
+
+    -- Cache hit: skip the network entirely. Only consulted when caching is on
+    -- — with caching off, we have no per-book file to look up.
+    if cache_enabled then
+        local hit, cached_path = Cache.exists(self.ui, text, voice_id, provider.model_id)
+        if hit then
+            local ok, perr = Player.play(cached_path)
+            if not ok then return showError(perr) end
+            return
+        end
     end
 
-    -- Cache miss: synthesize. Wrapped in NetworkMgr so the user gets a
-    -- proper "turn on Wi-Fi?" prompt on a fresh boot, and Trapper so
-    -- in-flight calls can be cancelled by the user.
+    -- Cache miss (or caching disabled): synthesize. Wrapped in NetworkMgr so
+    -- the user gets a proper "turn on Wi-Fi?" prompt on a fresh boot, and
+    -- Trapper so in-flight calls can be cancelled by the user.
     NetworkMgr:runWhenOnline(function()
         Trapper:wrap(function()
             local progress = InfoMessage:new{ text = _("Synthesizing speech…") }
@@ -253,12 +263,38 @@ function Speakword:speak(text)
             end
 
             local audio_bytes = audio_or_code
-            local saved_ok, path_or_code = Cache.write(self.ui, text, voice_id, provider.model_id, audio_bytes)
-            if not saved_ok then
-                return showError(path_or_code)
+            local play_path
+
+            if cache_enabled then
+                -- Persistent per-book cache.
+                local saved_ok, path_or_code = Cache.write(
+                    self.ui, text, voice_id, provider.model_id, audio_bytes)
+                if not saved_ok then
+                    return showError(path_or_code)
+                end
+                play_path = path_or_code
+            else
+                -- Ephemeral path: single shared slot, overwritten each call.
+                -- Binary mode matters on platforms where text mode mangles
+                -- 0x0D bytes (MP3 frames absolutely contain those).
+                local f, ferr = io.open(EPHEMERAL_PATH, "wb")
+                if not f then
+                    logger.warn("speakword: ephemeral open failed:", ferr)
+                    return showError(Errors.CODE.DISK, ferr)
+                end
+                local ok_write, write_err = pcall(function()
+                    f:write(audio_bytes)
+                end)
+                f:close()
+                if not ok_write then
+                    logger.warn("speakword: ephemeral write failed:", write_err)
+                    os.remove(EPHEMERAL_PATH)
+                    return showError(Errors.CODE.DISK, write_err)
+                end
+                play_path = EPHEMERAL_PATH
             end
 
-            local played, perr = Player.play(path_or_code)
+            local played, perr = Player.play(play_path)
             if not played then
                 return showError(perr)
             end

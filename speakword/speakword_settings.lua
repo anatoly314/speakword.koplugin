@@ -36,10 +36,11 @@ local PREVIEW_PATH = DataStorage:getDataDir() .. "/cache/speakword-preview.mp3"
 
 -- Settings keys. Centralized so the entry-point and the UI agree.
 Settings.KEY = {
-    PROVIDER = "provider",
-    VOICE_ID = "voice_id",
-    VOICE_NAME = "voice_name", -- cached for display only
+    PROVIDER      = "provider",
+    VOICE_ID      = "voice_id",
+    VOICE_NAME    = "voice_name",    -- cached for display only
     AUDIO_BACKEND = "audio_backend", -- "auto" | "intent"
+    CACHE_ENABLED = "cache_enabled", -- boolean, default true
 }
 
 -- Display labels for audio_backend values. The actual key is what gets
@@ -47,6 +48,13 @@ Settings.KEY = {
 local AUDIO_BACKEND_LABELS = {
     auto   = _("Auto (in-process on Android)"),
     intent = _("System intent (legacy)"),
+}
+
+-- Display labels for cache_enabled values. Same shape as AUDIO_BACKEND_LABELS
+-- so the menu sub-item builder can reuse the same pattern.
+local CACHE_ENABLED_LABELS = {
+    [true]  = _("On (per-book folder)"),
+    [false] = _("Off (ephemeral, not saved)"),
 }
 
 local function showInfo(text)
@@ -212,6 +220,15 @@ local function currentAudioBackend(plugin)
     return "auto"
 end
 
+--- Read the current cache_enabled setting, defaulting to true. Exposed as a
+--- module function so main.lua can branch on it without duplicating the
+--- "default true if absent" rule.
+function Settings.cacheEnabled(plugin)
+    local v = plugin.settings:readSetting(Settings.KEY.CACHE_ENABLED)
+    if v == nil then return true end
+    return v and true or false
+end
+
 --- Build the list of menu rows that go under "Tools → Speakword".
 --- Returned table is shaped for KOReader's TouchMenu (sub_item_table).
 function Settings.genMenuItems(plugin)
@@ -271,6 +288,38 @@ function Settings.genMenuItems(plugin)
                 return {
                     makeOption("auto"),
                     makeOption("intent"),
+                }
+            end,
+        },
+        {
+            -- Cache toggle. On (default) keeps the existing per-book cache
+            -- behavior — every synthesized clip is saved next to the book and
+            -- replayed instantly on a re-tap. Off uses a single ephemeral
+            -- file under koreader's cache dir, overwritten on every Speak,
+            -- so nothing accumulates in the user's library folder.
+            text_func = function()
+                local enabled = Settings.cacheEnabled(plugin)
+                local label = CACHE_ENABLED_LABELS[enabled]
+                return T(_("Cache audio per book: %1"), label)
+            end,
+            keep_menu_open = true,
+            sub_item_table_func = function()
+                local function makeOption(value)
+                    return {
+                        text = CACHE_ENABLED_LABELS[value],
+                        checked_func = function()
+                            return Settings.cacheEnabled(plugin) == value
+                        end,
+                        callback = function()
+                            plugin.settings:saveSetting(
+                                Settings.KEY.CACHE_ENABLED, value)
+                            plugin.updated = true
+                        end,
+                    }
+                end
+                return {
+                    makeOption(true),
+                    makeOption(false),
                 }
             end,
         },
