@@ -28,6 +28,13 @@ import android.content.Context;
 import android.media.AudioManager;
 import android.media.MediaPlayer;
 
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+
 /**
  * Minimal MediaPlayer wrapper for in-process MP3 playback.
  *
@@ -43,9 +50,13 @@ public class AudioPlayer {
     private MediaPlayer mediaPlayer;
     private volatile boolean playbackDone = false;
     private final AudioManager audioManager;
+    private final File cacheDir;
 
     public AudioPlayer(Context context) {
         audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+        // App-private cache dir. We copy each playback source here before
+        // handing the FD to MediaPlayer -- see playFile() for why.
+        cacheDir = context.getCacheDir();
     }
 
     /**
@@ -59,22 +70,35 @@ public class AudioPlayer {
         requestAudioFocus();
         synchronized (mpLock) {
             try {
+                // Copy the source file into our app-private cache dir before
+                // playing it. Why: even when we open() the file ourselves and
+                // hand MediaPlayer the resulting FD, MediaPlayer forwards it
+                // over Binder IPC to the system audioserver, which then runs
+                // its own SELinux/MAC check against the file's underlying
+                // inode label. On Android 13 / Boox, files in shared storage
+                // (/storage/emulated/0/...) carry a label audioserver isn't
+                // allowed to read, so setDataSource() fails with
+                // "setDataSourceFD failed.: status=0x80000000" for both MP3
+                // and WAV inputs that ffmpeg / desktop players accept fine.
+                // Files inside Context.getCacheDir() (app-private storage)
+                // carry a label audioserver IS allowed to read, so the same
+                // MediaPlayer call succeeds. The reference plugin
+                // stradichenko/audiobook.koplugin works on Boox precisely
+                // because it writes all TTS output straight into
+                // getCacheDir(); we keep our user-visible per-book cache as
+                // designed and just stage a copy here for playback.
+                //
+                // Single slot, overwritten each call -- we only ever play
+                // one clip at a time, so there's no need for unique names.
+                File copy = new File(cacheDir, "speakword-play.tmp");
+                copyFile(new File(path), copy);
+
                 mediaPlayer = new MediaPlayer();
-                // Open the file in our own process and hand MediaPlayer a
-                // FileDescriptor instead of a path. The String overload
-                // routes through Android's storage permission system, which
-                // on Android 13 (scoped storage / SELinux) blocks
-                // MediaPlayer's separate process from reading some
-                // app-public paths under /storage/emulated/0/... and fails
-                // with "setDataSourceFD failed.: status=0x80000000".
-                // Passing an FD we already opened bypasses that check --
-                // MediaPlayer dup()s the FD internally, so closing our
-                // FileInputStream after setDataSource is safe.
-                java.io.FileInputStream fis = new java.io.FileInputStream(path);
+                FileInputStream fis = new FileInputStream(copy);
                 try {
                     mediaPlayer.setDataSource(fis.getFD());
                 } finally {
-                    try { fis.close(); } catch (java.io.IOException ignored) {}
+                    try { fis.close(); } catch (IOException ignored) {}
                 }
                 mediaPlayer.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
                     @Override
@@ -152,6 +176,30 @@ public class AudioPlayer {
             playbackDone = false;
         }
         abandonAudioFocus();
+    }
+
+    /**
+     * Byte-copy src to dst, overwriting dst if present. Tiny helper -- the
+     * audio clips we play are ~10-100 KB each, so a plain stream copy is
+     * fine; we don't need NIO or memory mapping here.
+     */
+    private static void copyFile(File src, File dst) throws IOException {
+        InputStream in = new FileInputStream(src);
+        try {
+            OutputStream out = new FileOutputStream(dst);
+            try {
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = in.read(buf)) > 0) {
+                    out.write(buf, 0, n);
+                }
+                out.flush();
+            } finally {
+                try { out.close(); } catch (IOException ignored) {}
+            }
+        } finally {
+            try { in.close(); } catch (IOException ignored) {}
+        }
     }
 
     @SuppressWarnings("deprecation")
