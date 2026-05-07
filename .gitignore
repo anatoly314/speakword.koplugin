@@ -39,3 +39,17 @@ luac.out
 *.x86_64
 *.hex
 
+
+# Local plugin configuration with API keys — never commit
+configuration.lua
+
+# Audio cache (if accidentally copied here from device)
+*.mp3
+*.wav
+*.ogg
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+
