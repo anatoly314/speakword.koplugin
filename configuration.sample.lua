@@ -21,9 +21,11 @@ local CONFIGURATION = {
     provider = "elevenlabs",
 
     -- Per-provider settings. Each key matches a provider implementation
-    -- in `speakword/speakword_provider_<key>.lua`. Even providers that
-    -- require no configuration must have an entry here (an empty table is
-    -- fine) so the registry can identify them as enabled.
+    -- in `speakword/speakword_provider_<key>.lua`. Blocks are optional: a
+    -- provider that needs no configuration (e.g. Android System TTS) works
+    -- without an entry here, and a missing block is treated as `{}`. A
+    -- provider that does need configuration (e.g. ElevenLabs needs an API
+    -- key) will surface its own "not configured" error at first use.
     provider_settings = {
         elevenlabs = {
             -- Get a free key at https://elevenlabs.io  (free tier: 10K
@@ -43,8 +45,9 @@ local CONFIGURATION = {
             -- Android System TTS: no API key, no base URL — the engine is
             -- whatever the device has installed (typically
             -- com.google.android.tts on Onyx/Boox devices, samsung TTS on
-            -- Samsung, etc.). This block is intentionally near-empty;
-            -- you only need to keep the table present.
+            -- Samsung, etc.). This block is optional — Android needs nothing
+            -- here. It's kept in the sample purely as documentation of the
+            -- one knob (`model_id`) you can override below.
             --
             -- Requires:
             --   1. An Android device. On non-Android platforms this provider

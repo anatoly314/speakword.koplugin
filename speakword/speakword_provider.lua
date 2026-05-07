@@ -40,12 +40,14 @@ function ProviderRegistry.create(key, configuration)
         return nil, "unknown provider: " .. tostring(key)
     end
 
-    local provider_settings = configuration
+    -- Default to an empty table when the user has no `provider_settings.<key>`
+    -- block. Providers that need configuration (e.g. ElevenLabs needs an API
+    -- key) are responsible for surfacing a clean NOT_CONFIGURED error from
+    -- their own list_voices/synthesize methods. Providers that need nothing
+    -- (e.g. Android System TTS) then work with no configuration at all.
+    local provider_settings = (configuration
         and configuration.provider_settings
-        and configuration.provider_settings[key]
-    if not provider_settings then
-        return nil, "no provider_settings entry for " .. tostring(key)
-    end
+        and configuration.provider_settings[key]) or {}
 
     local module_name = "speakword/speakword_provider_" .. key
     local ok, mod = pcall(require, module_name)
