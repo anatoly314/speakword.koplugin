@@ -54,8 +54,9 @@ public class AudioPlayer {
 
     public AudioPlayer(Context context) {
         audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
-        // App-private cache dir. We copy each playback source here before
-        // handing the FD to MediaPlayer -- see playFile() for why.
+        // App-private cache dir. We stage each playback source here so we can
+        // give MediaPlayer a path with the right extension -- see playFile()
+        // for why.
         cacheDir = context.getCacheDir();
     }
 
@@ -70,36 +71,34 @@ public class AudioPlayer {
         requestAudioFocus();
         synchronized (mpLock) {
             try {
-                // Copy the source file into our app-private cache dir before
-                // playing it. Why: even when we open() the file ourselves and
-                // hand MediaPlayer the resulting FD, MediaPlayer forwards it
-                // over Binder IPC to the system audioserver, which then runs
-                // its own SELinux/MAC check against the file's underlying
-                // inode label. On Android 13 / Boox, files in shared storage
-                // (/storage/emulated/0/...) carry a label audioserver isn't
-                // allowed to read, so setDataSource() fails with
-                // "setDataSourceFD failed.: status=0x80000000" for both MP3
-                // and WAV inputs that ffmpeg / desktop players accept fine.
-                // Files inside Context.getCacheDir() (app-private storage)
-                // carry a label audioserver IS allowed to read, so the same
-                // MediaPlayer call succeeds. The reference plugin
-                // stradichenko/audiobook.koplugin works on Boox precisely
-                // because it writes all TTS output straight into
-                // getCacheDir(); we keep our user-visible per-book cache as
-                // designed and just stage a copy here for playback.
+                // Stage the source into our app-private cache dir under a
+                // name with the correct extension, then hand MediaPlayer the
+                // String absolute path. Why both:
                 //
-                // Single slot, overwritten each call -- we only ever play
-                // one clip at a time, so there's no need for unique names.
-                File copy = new File(cacheDir, "speakword-play.tmp");
+                // 1) Extension matters. On Android 13 / Boox, the stripped
+                //    MediaExtractor uses the FILENAME EXTENSION as a hint
+                //    when sniffing the container format. Without an
+                //    extension (or with the wrong one) it can fail to pick
+                //    an extractor and rejects the data source with
+                //    "setDataSourceFD failed.: status=0x80000000". We sniff
+                //    the magic bytes here and stage as .mp3 / .wav / .ogg
+                //    accordingly so the extractor has the hint it needs.
+                //
+                // 2) String path, not FD. The reference plugin
+                //    stradichenko/audiobook.koplugin (verified working on
+                //    Android Boox) uses the String overload of
+                //    setDataSource(); the FD overload route was the
+                //    original culprit on this device. Stick to String.
+                //
+                // Single slot per extension, overwritten each call -- we
+                // only ever play one clip at a time, so there's no need for
+                // unique names.
+                String ext = sniffExtension(new File(path));
+                File copy = new File(cacheDir, "speakword-play" + ext);
                 copyFile(new File(path), copy);
 
                 mediaPlayer = new MediaPlayer();
-                FileInputStream fis = new FileInputStream(copy);
-                try {
-                    mediaPlayer.setDataSource(fis.getFD());
-                } finally {
-                    try { fis.close(); } catch (IOException ignored) {}
-                }
+                mediaPlayer.setDataSource(copy.getAbsolutePath());
                 mediaPlayer.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
                     @Override
                     public void onCompletion(MediaPlayer mp) {
@@ -176,6 +175,65 @@ public class AudioPlayer {
             playbackDone = false;
         }
         abandonAudioFocus();
+    }
+
+    /**
+     * Peek the first 4 bytes of src and pick a filename extension based on
+     * well-known magic bytes. The Boox / Android 13 MediaExtractor uses the
+     * extension as a sniffing hint -- handing it a generic ".tmp" or no
+     * extension causes setDataSource() to fail with status=0x80000000.
+     *
+     * Returns the extension including the leading dot. Falls back to
+     * ".audio" for unknown payloads (any extension that survives the
+     * extractor's MIME guess is fine; this just keeps the staged filename
+     * non-empty for debugging).
+     */
+    private static String sniffExtension(File src) {
+        byte[] head = new byte[4];
+        InputStream in = null;
+        try {
+            in = new FileInputStream(src);
+            int read = 0;
+            while (read < head.length) {
+                int n = in.read(head, read, head.length - read);
+                if (n <= 0) break;
+                read += n;
+            }
+            if (read >= 3
+                    && head[0] == (byte) 0x49   // 'I'
+                    && head[1] == (byte) 0x44   // 'D'
+                    && head[2] == (byte) 0x33) { // '3'
+                return ".mp3";
+            }
+            if (read >= 2
+                    && head[0] == (byte) 0xFF
+                    && (head[1] == (byte) 0xFB
+                        || head[1] == (byte) 0xF3
+                        || head[1] == (byte) 0xF2)) {
+                return ".mp3";
+            }
+            if (read >= 4
+                    && head[0] == (byte) 0x52   // 'R'
+                    && head[1] == (byte) 0x49   // 'I'
+                    && head[2] == (byte) 0x46   // 'F'
+                    && head[3] == (byte) 0x46) { // 'F'
+                return ".wav";
+            }
+            if (read >= 4
+                    && head[0] == (byte) 0x4F   // 'O'
+                    && head[1] == (byte) 0x67   // 'g'
+                    && head[2] == (byte) 0x67   // 'g'
+                    && head[3] == (byte) 0x53) { // 'S'
+                return ".ogg";
+            }
+        } catch (IOException ignored) {
+            // fall through to default
+        } finally {
+            if (in != null) {
+                try { in.close(); } catch (IOException ignored) {}
+            }
+        }
+        return ".audio";
     }
 
     /**
