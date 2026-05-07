@@ -8,18 +8,31 @@
 -- The voice list is fetched on demand (when the user opens the picker), not
 -- at plugin init, so we never block startup on a network call.
 
+local DataStorage      = require("datastorage")
 local Menu             = require("ui/widget/menu")
 local InfoMessage      = require("ui/widget/infomessage")
 local NetworkMgr       = require("ui/network/manager")
 local Trapper          = require("ui/trapper")
 local UIManager        = require("ui/uimanager")
+local logger           = require("logger")
 local _                = require("gettext")
 local T                = require("ffi/util").template
 
 local Errors           = require("speakword/speakword_errors")
+local Player           = require("speakword/speakword_player")
 local ProviderRegistry = require("speakword/speakword_provider")
 
 local Settings = {}
+
+-- Sample sentence synthesized when the user taps a voice in the picker.
+-- Kept short so the preview round-trip stays under a couple of seconds and
+-- doesn't burn quota.
+local PREVIEW_TEXT = "Let's make it speak"
+
+-- Where the preview MP3 is written. Lives in koreader's cache dir (NOT the
+-- per-book notes folder), and is overwritten on every preview, so it never
+-- pollutes the user's library or grows unbounded.
+local PREVIEW_PATH = DataStorage:getDataDir() .. "/cache/speakword-preview.mp3"
 
 -- Settings keys. Centralized so the entry-point and the UI agree.
 Settings.KEY = {
@@ -91,6 +104,45 @@ local function buildProvider(plugin)
     return provider
 end
 
+--- Synthesize PREVIEW_TEXT in `voice_id` and play it. Writes the MP3 to a
+--- single shared cache path (overwritten each call) so the per-book notes
+--- folder isn't polluted with sample-sentence files. Failures are surfaced
+--- via showError; selection-saving is the caller's job and runs regardless
+--- of whether this succeeds.
+local function previewVoice(provider, voice_id)
+    NetworkMgr:runWhenOnline(function()
+        Trapper:wrap(function()
+            local progress = InfoMessage:new{ text = _("Synthesizing preview…") }
+            UIManager:show(progress)
+            UIManager:forceRePaint()
+
+            local ok, audio_or_code, detail = provider:synthesize(PREVIEW_TEXT, voice_id)
+
+            UIManager:close(progress)
+
+            if not ok then
+                return showError(audio_or_code, detail)
+            end
+
+            -- Write the audio bytes to our single preview slot. Binary mode
+            -- matters on platforms where text mode mangles 0x0D bytes (MP3
+            -- frames absolutely contain those).
+            local f, ferr = io.open(PREVIEW_PATH, "wb")
+            if not f then
+                logger.warn("speakword: preview open failed:", ferr)
+                return showError(Errors.CODE.DISK, ferr)
+            end
+            f:write(audio_or_code)
+            f:close()
+
+            local played, perr = Player.play(PREVIEW_PATH)
+            if not played then
+                return showError(perr)
+            end
+        end)
+    end)
+end
+
 --- Open the voice picker. Fetches the list from the provider on each open
 --- (so a freshly added voice on the ElevenLabs dashboard appears without
 --- restarting KOReader). Network call is wrapped in NetworkMgr + Trapper
@@ -125,10 +177,20 @@ local function showVoicePicker(plugin, refresh_parent)
                 table.insert(items, {
                     text = v.name,
                     callback = function()
+                        -- Save + refresh the parent menu first so the user's
+                        -- selection sticks even if the preview round-trip
+                        -- fails (network drops, quota, etc.). The voice menu
+                        -- itself closes automatically when this callback
+                        -- returns (KOReader Menu default tap behavior).
                         plugin.settings:saveSetting(Settings.KEY.VOICE_ID, v.id)
                         plugin.settings:saveSetting(Settings.KEY.VOICE_NAME, v.name)
                         plugin.updated = true
                         if refresh_parent then refresh_parent() end
+
+                        -- Then fire off the preview. Same provider instance
+                        -- as the one we used to list voices — no need to
+                        -- rebuild it.
+                        previewVoice(provider, v.id)
                     end,
                 })
             end
