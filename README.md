@@ -69,15 +69,25 @@ caches the mp3. Subsequent taps replay the cached file instantly.
 
 ## Audio playback
 
-Speakword hands the cached `.mp3` to the OS via `Device:openLink("file://...")`.
-On Android (including Boox) this dispatches an `ACTION_VIEW` intent and
-the system's default media player takes over. There's a brief overlay
-during playback; nothing else has to be installed.
+On Android, Speakword plays audio **in-process** via a small bundled `.dex`
+that wraps Android's `MediaPlayer` and is loaded at runtime through
+`DexClassLoader`. KOReader stays foreground — no music-player overlay, no
+"open with…" chooser. The compiled `audio_helper.dex` (~3.5 KB) ships in the
+repo; only contributors editing `speakword/android/AudioPlayer.java` need the
+Android SDK to rebuild it via `speakword/android/build-dex.sh`.
 
-> **TODO:** investigate an in-process audio path that doesn't leave KOReader
-> for each pronunciation. KOReader's stock Android frontend doesn't expose
-> a MediaPlayer binding; until that changes (or a JNI bridge is added), the
-> intent-based handoff is the cleanest option.
+This matters because some devices (Boox China firmware among them) ship
+without any app registered as an `audio/mpeg` intent handler — under the
+intent-dispatch approach, taps would silently fail. The bundled MediaPlayer
+sidesteps that entirely.
+
+On other platforms (desktop Linux, Kobo, Kindle) the plugin falls back to
+`Device:openLink("file://...")`. You can also force this fallback on
+Android via Tools → Speakword TTS → **Audio backend** → Intent.
+
+The Java wrapper is adapted from
+[`audiobook.koplugin`](https://github.com/stradichenko/audiobook.koplugin)
+(AGPL-3.0); license attribution lives in the source headers.
 
 ## ElevenLabs free-tier notes
 
