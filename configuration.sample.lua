@@ -18,7 +18,7 @@ local CONFIGURATION = {
     --                  downloaded.
     -- The user can also switch providers at runtime via Tools → Speakword TTS
     -- → Provider; this `provider =` field is just the initial default.
-    provider = "elevenlabs",
+    provider = "android",
 
     -- Per-provider settings. Each key matches a provider implementation
     -- in `speakword/speakword_provider_<key>.lua`. Blocks are optional: a

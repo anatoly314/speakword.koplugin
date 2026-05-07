@@ -3,15 +3,20 @@
 Pronounce selected words and sentences in [KOReader](https://koreader.rocks/).
 Two providers ship in the box:
 
-- **ElevenLabs** (cloud, paid) — high-quality voices, free tier of 10K
-  credits/month. Requires an API key and an internet connection.
-- **Android System TTS** (on-device, free) — uses whichever TTS engine the
-  device has installed (typically Speech Services by Google). Lower quality
-  than ElevenLabs but works **offline** once a voice pack is downloaded, and
-  costs nothing. Android-only.
+- **Android System TTS** (default — on-device, free, offline) — uses whichever
+  TTS engine the device has installed (typically Speech Services by Google).
+  No signup, no API key, no network round-trip, no per-call cost. The voice
+  picker only shows voices with offline data already downloaded, so picking
+  one always works. **Recommended for most users.**
+- **ElevenLabs** (cloud, paid free tier) — **noticeably higher quality** than
+  Android TTS, with neural-network voices that sound far more natural and
+  expressive. Recommended if you want premium pronunciation for language
+  learning. Requires an API key (10K credits/month free) and an internet
+  connection.
 
-The architecture makes it straightforward to add Google Cloud TTS, Azure,
-AWS Polly, etc. as additional providers.
+You can switch between providers at runtime via Tools → Speakword TTS →
+**Provider**. The architecture makes it straightforward to add Google Cloud
+TTS, Azure, AWS Polly, etc. as additional providers.
 
 ## What it does
 
@@ -39,15 +44,17 @@ AWS Polly, etc. as additional providers.
    `/storage/emulated/0/koreader/plugins/`. On a desktop development build
    it's wherever `DataStorage:getDataDir()` resolves, usually `~/.config/koreader/`.
 
-2. Pick a provider. For **ElevenLabs**, sign up at [try.elevenlabs.io/anatoly314-koreader](https://try.elevenlabs.io/anatoly314-koreader) (affiliate link), then go to Profile → API Keys → Create new key. The free tier gives 10K credits/month — plenty for occasional word lookups. For **Android System TTS**, no signup is needed; just make sure your device has a TTS engine installed (most do) and a voice pack downloaded (Settings → System → Languages & input → Text-to-speech output → Install voice data).
+2. **For Android System TTS (default)**: just make sure your device has a TTS engine installed (most do — typically Speech Services by Google) and at least one voice pack downloaded via Android Settings → System → Languages & input → Text-to-speech output → Install voice data. No signup, no API key. Skip step 3 if you only want Android TTS — the default `configuration.sample.lua` works as-is.
+
+   **For ElevenLabs (better quality, optional)**: sign up at [try.elevenlabs.io/anatoly314-koreader](https://try.elevenlabs.io/anatoly314-koreader) (affiliate link), then Profile → API Keys → Create new key. The free tier gives 10K credits/month — plenty for occasional word lookups.
 
 3. Copy `configuration.sample.lua` to `configuration.lua` (in the same
-   `speakword.koplugin/` folder). The sample includes both providers; set
-   `provider = "elevenlabs"` or `provider = "android"` and fill in the API
-   key for whichever cloud providers you want to use:
+   `speakword.koplugin/` folder). The default uses Android TTS — for that
+   you don't need to edit anything. To use ElevenLabs, change the provider
+   line and fill in the API key:
 
    ```lua
-   provider = "android",  -- or "elevenlabs"
+   provider = "android",  -- default; change to "elevenlabs" to use that
    provider_settings = {
        elevenlabs = {
            api_key = "<your-elevenlabs-key>",
