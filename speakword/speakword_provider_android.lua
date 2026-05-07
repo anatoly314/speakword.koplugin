@@ -62,8 +62,11 @@ local INIT_TIMEOUT_MS = 8000
 
 -- Default time we wait for a single synthesizeToFile() to finish. Words
 -- and short sentences usually return in under a second; longer highlights
--- can take a few seconds depending on the engine.
-local SYNTH_TIMEOUT_MS = 30000
+-- can take a few seconds depending on the engine. We keep this short
+-- (10s) so that if a misbehaving voice still slips past the listVoices()
+-- filter (e.g. an uninstalled or cloud-only voice), the user sees a
+-- prompt failure rather than a half-minute freeze.
+local SYNTH_TIMEOUT_MS = 10000
 
 -- Module-scope JNI cache. Lives across all provider instances (only one
 -- TextToSpeech engine per process makes sense; the engine itself is a

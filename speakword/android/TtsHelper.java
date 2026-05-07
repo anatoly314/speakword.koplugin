@@ -168,11 +168,19 @@ public class TtsHelper implements TextToSpeech.OnInitListener {
             String name = v.getName();
             if (name == null || name.isEmpty()) continue;
 
-            // Skip voices flagged as not-yet-installed network voices that
-            // the engine knows about but cannot synthesize offline. They
-            // would synth-error later anyway and confuse the picker.
-            if (v.isNetworkConnectionRequired() && v.getFeatures() != null
-                    && v.getFeatures().contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED)) {
+            // Skip voices that aren't installed or that require network.
+            // Either condition means the engine cannot synthesize the voice
+            // reliably from our offline-friendly polling path: an
+            // uninstalled voice has no on-device data and the engine just
+            // hangs waiting for it; a network-only / cloud voice requires
+            // connectivity we can't assume on an e-reader. Both end up as
+            // a 30-second poll timeout that looks like a freeze.
+            java.util.Set<String> features = v.getFeatures();
+            boolean notInstalled = features != null
+                    && features.contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED);
+            boolean networkOnly = v.isNetworkConnectionRequired()
+                    || (features != null && features.contains(TextToSpeech.Engine.KEY_FEATURE_NETWORK_SYNTHESIS));
+            if (notInstalled || networkOnly) {
                 continue;
             }
 
