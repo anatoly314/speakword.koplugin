@@ -3,6 +3,6 @@ local _ = require("gettext")
 return {
     name = "speakword",
     fullname = _("Speakword TTS"),
-    description = _("Pronounce selected words and sentences via cloud TTS (ElevenLabs)."),
-    version = "0.1.0",
+    description = _("Speak selected words and sentences via TTS. Default: Android system TTS (free, offline). Optional: ElevenLabs (premium cloud voices)."),
+    version = "0.2.0",
 }
